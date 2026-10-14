@@ -91,6 +91,7 @@ public class VideoPlayerModel {
 
     public VideoPlayerModel(
             boolean audioEnabled,
+            List<String> frameEffectOptions,
             BiConsumer<Integer, Integer> videoSizeChangedHandler,
             Consumer<Image> frameReadyHandler,
             Consumer<String> statusChangedHandler,
@@ -103,6 +104,10 @@ public class VideoPlayerModel {
         this.playbackStateChangedHandler = playbackStateChangedHandler;
         this.audioOutputStateChangedHandler = audioOutputStateChangedHandler;
         this.frameProcessors = new ArrayList<>();
+        // Create one processor per option so duplicates are applied separately and in order.
+        for (String option : frameEffectOptions) {
+            frameProcessors.add(createFrameProcessor(option));
+        }
 //        frameProcessors.add(new FrameBleeder());
 //        frameProcessors.add(new FrameScratcher());
 //        frameProcessors.add(new FrameDuster());
@@ -113,6 +118,25 @@ public class VideoPlayerModel {
 //        frameProcessors.add(new FrameFlickerer());
 //        frameProcessors.add(new FrameJitterer());
 //        frameProcessors.add(new FrameNumberer());
+    }
+
+    // Maps the command-line identifiers to their corresponding frame processors.
+    // Add new processor types here when extending the supported command-line options.
+    private FrameProcessor createFrameProcessor(String option) {
+        return switch (option) {
+            case "-n" -> new FrameNumberer();
+            case "-s" -> new FrameScratcher();
+            case "-f" -> new FrameFlickerer();
+            case "-w" -> new FrameBlackAndWhiter();
+            case "-y" -> new FrameYellower();
+            case "-v" -> new FrameVignetter();
+            case "-d" -> new FrameDuster();
+            case "-j" -> new FrameJitterer();
+            case "-m" -> new FrameMottler();
+            case "-b" -> new FrameBleeder();
+            case "-p" -> new FramePepperer();
+            default -> throw new IllegalArgumentException("Unknown frame processor option: " + option);
+        };
     }
 
     public void play(File file) {
