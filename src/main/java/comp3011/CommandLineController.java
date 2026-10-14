@@ -33,6 +33,9 @@ public class CommandLineController {
     private File videoFile;
     private String errorMessage;
 
+    // Stores frame processor options in command-line order, including duplicates.
+    private final List<String> frameEffectOptions = new ArrayList<>();
+
     public CommandLineController(String[] args) {
         this.args = args.clone();
         parse();
