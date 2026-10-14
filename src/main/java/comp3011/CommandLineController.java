@@ -1,3 +1,4 @@
+
 /*
  * Starter code supplied for Adelaide University COMP3011 Assignment 2.
  * Students are free to modify this file for assessment purposes.
@@ -71,6 +72,11 @@ public class CommandLineController {
         return maximiseRequested;
     }
 
+    // Returns an immutable copy to protect the parsed effect order.
+    public List<String> getFrameEffectOptions() {
+        return List.copyOf(frameEffectOptions);
+    }
+
     public boolean shouldLaunchApplication() {
         return errorMessage == null && videoFile != null;
     }
@@ -88,6 +94,49 @@ public class CommandLineController {
                 setDisplayId(1);
             } else if ("-2".equals(arg) || "--monitor-2".equals(arg)) {
                 setDisplayId(2);
+            } else if (arg.startsWith("--")) {
+                String effect = getFrameEffectOption(arg);
+
+                if (effect != null) {
+                    frameEffectOptions.add(effect);
+                } else {
+                    errorMessage = "Unknown option: " + arg;
+                }
+            } else if (arg.startsWith("-") && arg.length() > 1) {
+                // Parse single or stacked short options in their original order.
+                for (int i = 1; i < arg.length(); i++) {
+                    String option = "-" + arg.charAt(i);
+                    String effect = getFrameEffectOption(option);
+
+                    if (effect != null) {
+                        frameEffectOptions.add(effect);
+                    } else {
+                        switch (option) {
+                            case "-h":
+                                helpRequested = true;
+                                break;
+                            case "-a":
+                                audioRequested = true;
+                                break;
+                            case "-x":
+                                maximiseRequested = true;
+                                break;
+                            case "-1":
+                                setDisplayId(1);
+                                break;
+                            case "-2":
+                                setDisplayId(2);
+                                break;
+                            default:
+                                errorMessage = "Unknown option: " + option;
+                                break;
+                        }
+                    }
+
+                    if (errorMessage != null) {
+                        break;
+                    }
+                }
             } else if (arg.startsWith("-")) {
                 errorMessage = "Unknown option: " + arg;
             } else {
@@ -108,6 +157,31 @@ public class CommandLineController {
                 errorMessage = "No video file specified.";
             }
         }
+    }
+
+    /**
+     * Converts a frame processor option to its short identifier.
+     * Both short and long options use the same identifiers so that
+     * the video player can create processors in the requested order.
+     *
+     * To add a new frame processor, register its command-line options
+     * here and add its corresponding processor creation logic.
+     */
+    private String getFrameEffectOption(String option) {
+        return switch (option) {
+            case "-n", "--number-frames" -> "-n";
+            case "-s", "--scratch-frames" -> "-s";
+            case "-f", "--flicker-frames" -> "-f";
+            case "-w", "--black-and-white" -> "-w";
+            case "-y", "--yellow-frames" -> "-y";
+            case "-v", "--vignette-frames" -> "-v";
+            case "-d", "--dust-frames" -> "-d";
+            case "-j", "--jitter-frames" -> "-j";
+            case "-m", "--mottle-frames" -> "-m";
+            case "-b", "--bleed-frames" -> "-b";
+            case "-p", "--pepper-frames" -> "-p";
+            default -> null;
+        };
     }
 
     private void setDisplayId(int displayId) {
