@@ -201,5 +201,22 @@ public class CommandLineController {
         System.out.println("  -x, --maximise     Open the player maximised");
         System.out.println("  -1, --monitor-1    Open the player on display 1");
         System.out.println("  -2, --monitor-2    Open the player on display 2");
+        System.out.println();
+        System.out.println("Frame effects:");
+        System.out.println("  -n, --number-frames     Display frame numbers");
+        System.out.println("  -s, --scratch-frames    Add film scratches");
+        System.out.println("  -f, --flicker-frames    Add frame flickering");
+        System.out.println("  -w, --black-and-white   Convert frames to black and white");
+        System.out.println("  -y, --yellow-frames     Add a yellow tint");
+        System.out.println("  -v, --vignette-frames   Add a vignette effect");
+        System.out.println("  -d, --dust-frames       Add film dust");
+        System.out.println("  -j, --jitter-frames     Add frame jitter");
+        System.out.println("  -m, --mottle-frames     Add a mottled film effect");
+        System.out.println("  -b, --bleed-frames      Add colour bleeding");
+        System.out.println("  -p, --pepper-frames     Add film pepper noise");
+        System.out.println();
+        System.out.println("Frame effects are applied in command-line order.");
+        System.out.println("Effects may be repeated and short options may be combined.");
+        System.out.println("Example: VideoPlayer -sfn -s sample-5s.mp4");
     }
 }
