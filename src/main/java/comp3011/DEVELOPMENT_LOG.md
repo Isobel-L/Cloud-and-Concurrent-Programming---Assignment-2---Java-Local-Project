@@ -26,3 +26,8 @@
 - Recompiled the application and confirmed all 18 JUnit tests passed
 - Tested background playback and observed improved frame-headroom readings
 - Continued checking playback controls before committing the concurrent implementation
+- Improved coordination between the background decoder and JavaFX rendering thread
+- Updated frame buffering to reduce unnecessary polling and improve worker efficiency
+- Prevented buffered frames from advancing during paused playback
+- Tested playback, pausing, resuming and replaying with multiple effects
+- Confirmed all 18 JUnit tests passed and the application ran successfully

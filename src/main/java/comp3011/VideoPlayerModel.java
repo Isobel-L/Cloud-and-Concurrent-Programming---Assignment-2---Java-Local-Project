@@ -185,6 +185,9 @@ public class VideoPlayerModel {
             flushAudioOutput();
         } else {
             resumePlaybackClock(System.nanoTime());
+            synchronized (preparedFrames) {
+                preparedFrames.notifyAll();
+            }
         }
 
         notifyPlaybackStateChanged();
@@ -336,7 +339,9 @@ public class VideoPlayerModel {
             while (playbackOpen && !currentWorker.isInterrupted()) {
                 if (preparedFrames.remainingCapacity() == 0
                         || (pauseRequested && !preparedFrames.isEmpty())) {
-                    Thread.sleep(2);
+                    synchronized (preparedFrames) {
+                        preparedFrames.wait(50);
+                    }
                     continue;
                 }
 
@@ -471,7 +476,7 @@ public class VideoPlayerModel {
 
         // Task (2)
         PreparedFrame nextFrame = preparedFrames.peek();
-        if (nextFrame != null && firstTimestampUs != NO_SEEK_REQUEST) {
+        if (!pauseRequested && nextFrame != null && firstTimestampUs != NO_SEEK_REQUEST) {
             long relativeTimestampUs = Math.max(0, nextFrame.mediaTimestampUs() - firstTimestampUs);
             long dueTimeNs = playbackStartNs + relativeTimestampUs * 1_000L;
 
@@ -495,6 +500,10 @@ public class VideoPlayerModel {
         PreparedFrame frame = preparedFrames.poll();
         if (frame == null) {
             return;
+        }
+
+        synchronized (preparedFrames) {
+            preparedFrames.notifyAll();
         }
 
         currentTimestampUs = frame.logicalTimestampUs();
