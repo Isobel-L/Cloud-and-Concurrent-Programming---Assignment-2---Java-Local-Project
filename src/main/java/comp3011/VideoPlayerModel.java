@@ -15,6 +15,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Queue;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
@@ -42,6 +43,7 @@ public class VideoPlayerModel {
     private static final long NO_SEEK_REQUEST = -1; // Sentinel value used when no seek position is active.
     private static final long FIVE_SECONDS_US = 5_000_000L;
     private static final long AUDIO_LEAD_NS = 30_000_000L;
+    private static final int FRAME_BUFFER_CAPACITY = 3;
 
     private final List<FrameProcessor> frameProcessors;
     private final Queue<PendingAudio> pendingAudio = new ArrayDeque<>();
@@ -70,7 +72,7 @@ public class VideoPlayerModel {
     private FFmpegFrameGrabber grabber; // This is the 3rd party video media decoder. It deals in JavaCV Frame objects.
     private JavaFXFrameConverter converter; // Takes Frame objects to JavaFX Image objects, which can be put on screen.
     private AudioPlayer audioPlayer; // This is ours. It has some real time buffering smarts.
-    private PreparedFrame preparedFrame; // Ours, but is just an Image with some meta-data added.
+    private final Queue<PreparedFrame> preparedFrames = new ArrayBlockingQueue<>(FRAME_BUFFER_CAPACITY); // Ours, but is just an Image with some meta-data added.
     private boolean prepareNextFrameQueued; // True only when the event loop needs to call our prepareNextFrame method.
     private boolean playbackOpen; // True when playback is happening.
     private boolean pauseRequested;
@@ -295,7 +297,7 @@ public class VideoPlayerModel {
 
     private void resetPlaybackClock(long logicalTimestampUs) {
         pendingAudio.clear();
-        preparedFrame = null;
+        preparedFrames.clear();
         currentTimestampUs = logicalTimestampUs;
         relativeSeekBaseUs = logicalTimestampUs;
         firstTimestampUs = NO_SEEK_REQUEST;
@@ -312,12 +314,15 @@ public class VideoPlayerModel {
     }
 
     private void prepareNextFrame() {
-        if (!playbackOpen || preparedFrame != null) {
+        if (!playbackOpen || !preparedFrames.isEmpty()) {
             return;
         }
 
         try {
-            preparedFrame = readNextVideoFrame();
+            PreparedFrame frame = readNextVideoFrame();
+            if (frame != null) {
+                preparedFrames.offer(frame);
+            }
         } catch (Exception e) {
             handlePlaybackError(e);
         }
@@ -400,7 +405,8 @@ public class VideoPlayerModel {
         writeDueAudio(now);
 
         // Task (2)
-        if (preparedFrame != null && preparedFrame.targetTimeNs() <= now) {
+        PreparedFrame nextFrame = preparedFrames.peek();
+        if (nextFrame != null && nextFrame.targetTimeNs() <= now) {
             // We have a prepared frame ready to go and it is due (or just past due!) so get it up on screen ASAP!
             displayPreparedFrame(now);
         }
@@ -410,7 +416,7 @@ public class VideoPlayerModel {
         // to replace this whole block with simple linear control flow logic
         // such as: if (!pauseRequested && preparedFrame == null) prepareNextFrame();
         // to compare.
-        if (!pauseRequested && preparedFrame == null && !prepareNextFrameQueued) {
+        if (!pauseRequested && preparedFrames.isEmpty() && !prepareNextFrameQueued) {
             prepareNextFrameQueued = true;
             Platform.runLater(() -> {
                 prepareNextFrameQueued = false;
@@ -423,8 +429,11 @@ public class VideoPlayerModel {
     }
 
     private void displayPreparedFrame(long now) {
-        PreparedFrame frame = preparedFrame;
-        preparedFrame = null;
+        PreparedFrame frame = preparedFrames.poll();
+        if (frame == null) {
+            return;
+        }
+
         currentTimestampUs = frame.logicalTimestampUs();
         relativeSeekBaseUs = NO_SEEK_REQUEST;
 
@@ -462,6 +471,7 @@ public class VideoPlayerModel {
             pendingAudio.clear();
             return;
         }
+
         if (pauseRequested || firstTimestampUs == NO_SEEK_REQUEST || playbackStartNs <= 0) {
             return;
         }
@@ -511,7 +521,7 @@ public class VideoPlayerModel {
     private void closePlaybackResources() {
         playbackTimer.stop();
         playbackOpen = false;
-        preparedFrame = null;
+        preparedFrames.clear();
         pendingAudio.clear();
         firstTimestampUs = NO_SEEK_REQUEST;
         playbackStartNs = 0;
