@@ -11,11 +11,11 @@
 package comp3011;
 
 import java.io.File;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
@@ -46,7 +46,8 @@ public class VideoPlayerModel {
     private static final int FRAME_BUFFER_CAPACITY = 3;
 
     private final List<FrameProcessor> frameProcessors;
-    private final Queue<PendingAudio> pendingAudio = new ArrayDeque<>();
+    private final Queue<PendingAudio> pendingAudio = new ConcurrentLinkedQueue<>();
+    private final Object audioLock = new Object();
     private final BiConsumer<Integer, Integer> videoSizeChangedHandler;
     private final Consumer<Image> frameReadyHandler;
     private final Consumer<String> statusChangedHandler;
@@ -72,11 +73,12 @@ public class VideoPlayerModel {
     private FFmpegFrameGrabber grabber; // This is the 3rd party video media decoder. It deals in JavaCV Frame objects.
     private JavaFXFrameConverter converter; // Takes Frame objects to JavaFX Image objects, which can be put on screen.
     private AudioPlayer audioPlayer; // This is ours. It has some real time buffering smarts.
-    private final Queue<PreparedFrame> preparedFrames = new ArrayBlockingQueue<>(FRAME_BUFFER_CAPACITY); // Ours, but is just an Image with some meta-data added.
+    private final ArrayBlockingQueue<PreparedFrame> preparedFrames =
+            new ArrayBlockingQueue<>(FRAME_BUFFER_CAPACITY); // Ours, but is just an Image with some meta-data added.
     private boolean prepareNextFrameQueued; // True only when the event loop needs to call our prepareNextFrame method.
-    private boolean playbackOpen; // True when playback is happening.
-    private boolean pauseRequested;
-    private boolean audioOutputEnabled;
+    private volatile boolean playbackOpen; // True when playback is happening.
+    private volatile boolean pauseRequested;
+    private volatile boolean audioOutputEnabled;
     private boolean audioAvailable;
     private boolean frameProcessorsInitialised;
     private long currentTimestampUs;
@@ -85,11 +87,14 @@ public class VideoPlayerModel {
     private double frameRate;
     private int intFrameRate;
     private int totalVideoFrames;
-    private long firstTimestampUs = NO_SEEK_REQUEST;
+    private volatile long firstTimestampUs = NO_SEEK_REQUEST;
     private long logicalPlaybackBaseUs;
-    private long playbackStartNs;
-    private long pauseStartedNs;
+    private volatile long playbackStartNs;
+    private volatile long pauseStartedNs;
     private long relativeSeekBaseUs = NO_SEEK_REQUEST;
+
+    private Thread decoderWorker;
+    private volatile boolean decoderFinished;
 
     public VideoPlayerModel(
             boolean audioEnabled,
@@ -186,9 +191,11 @@ public class VideoPlayerModel {
     }
 
     public void toggleAudioOutput() {
-        audioOutputEnabled = !audioOutputEnabled;
-        pendingAudio.clear();
-        flushAudioOutput();
+        synchronized (audioLock) {
+            audioOutputEnabled = !audioOutputEnabled;
+            pendingAudio.clear();
+            flushAudioOutput();
+        }
         notifyAudioOutputStateChanged();
     }
 
@@ -230,10 +237,11 @@ public class VideoPlayerModel {
         }
 
         try {
+            stopDecoderWorker();
             grabber.setTimestamp(grabTimestampUs);
             resetPlaybackClock(logicalTimestampUs);
             flushAudioOutput();
-            prepareNextFrame();
+            startDecoderWorker();
             notifyPlaybackStateChanged();
         } catch (Exception e) {
             handlePlaybackError(e);
@@ -256,7 +264,7 @@ public class VideoPlayerModel {
             resetPlaybackClock(currentTimestampUs);
             playbackOpen = true;
             playbackTimer.start();
-            prepareNextFrame();
+            startDecoderWorker();
             notifyPlaybackStateChanged();
         } catch (Exception e) {
             handlePlaybackError(e);
@@ -298,6 +306,7 @@ public class VideoPlayerModel {
     private void resetPlaybackClock(long logicalTimestampUs) {
         pendingAudio.clear();
         preparedFrames.clear();
+        decoderFinished = false;
         currentTimestampUs = logicalTimestampUs;
         relativeSeekBaseUs = logicalTimestampUs;
         firstTimestampUs = NO_SEEK_REQUEST;
@@ -313,26 +322,82 @@ public class VideoPlayerModel {
         pauseStartedNs = 0;
     }
 
-    private void prepareNextFrame() {
-        if (!playbackOpen || !preparedFrames.isEmpty()) {
+    private void startDecoderWorker() {
+        decoderFinished = false;
+        decoderWorker = new Thread(this::runDecoderWorker, "video-decoder");
+        decoderWorker.setDaemon(true);
+        decoderWorker.start();
+    }
+
+    private void runDecoderWorker() {
+        Thread currentWorker = Thread.currentThread();
+
+        try {
+            while (playbackOpen && !currentWorker.isInterrupted()) {
+                if (preparedFrames.remainingCapacity() == 0
+                        || (pauseRequested && !preparedFrames.isEmpty())) {
+                    Thread.sleep(2);
+                    continue;
+                }
+
+                prepareNextFrame();
+
+                if (decoderFinished) {
+                    return;
+                }
+            }
+        } catch (InterruptedException e) {
+            currentWorker.interrupt();
+        } catch (Exception e) {
+            Platform.runLater(() -> {
+                if (playbackOpen && decoderWorker == currentWorker) {
+                    handlePlaybackError(e);
+                }
+            });
+        }
+    }
+
+    private void stopDecoderWorker() {
+        Thread worker = decoderWorker;
+        if (worker == null) {
             return;
         }
 
-        try {
-            PreparedFrame frame = readNextVideoFrame();
-            if (frame != null) {
-                preparedFrames.offer(frame);
+        worker.interrupt();
+
+        if (worker != Thread.currentThread()) {
+            boolean interrupted = false;
+            while (worker.isAlive()) {
+                try {
+                    worker.join();
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                }
             }
-        } catch (Exception e) {
-            handlePlaybackError(e);
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        decoderWorker = null;
+    }
+
+    private void prepareNextFrame() throws Exception {
+        if (!playbackOpen || preparedFrames.remainingCapacity() == 0) {
+            return;
+        }
+
+        PreparedFrame frame = readNextVideoFrame();
+        if (frame != null && playbackOpen) {
+            preparedFrames.put(frame);
         }
     }
 
     private PreparedFrame readNextVideoFrame() throws Exception {
-        while (playbackOpen) {
+        while (playbackOpen && !Thread.currentThread().isInterrupted()) {
             Frame frame = grabFrame();
             if (frame == null) {
-                finishPlayback();
+                decoderFinished = true;
                 return null;
             }
 
@@ -406,9 +471,14 @@ public class VideoPlayerModel {
 
         // Task (2)
         PreparedFrame nextFrame = preparedFrames.peek();
-        if (nextFrame != null && nextFrame.targetTimeNs() <= now) {
-            // We have a prepared frame ready to go and it is due (or just past due!) so get it up on screen ASAP!
-            displayPreparedFrame(now);
+        if (nextFrame != null && firstTimestampUs != NO_SEEK_REQUEST) {
+            long relativeTimestampUs = Math.max(0, nextFrame.mediaTimestampUs() - firstTimestampUs);
+            long dueTimeNs = playbackStartNs + relativeTimestampUs * 1_000L;
+
+            if (dueTimeNs <= now) {
+                // We have a prepared frame ready to go and it is due (or just past due!) so get it up on screen ASAP!
+                displayPreparedFrame(now);
+            }
         }
 
         // Task (3). We'll try and be nice to the GUI event loop here by queueing the prepareNextFrame call rather than
@@ -416,15 +486,8 @@ public class VideoPlayerModel {
         // to replace this whole block with simple linear control flow logic
         // such as: if (!pauseRequested && preparedFrame == null) prepareNextFrame();
         // to compare.
-        if (!pauseRequested && preparedFrames.isEmpty() && !prepareNextFrameQueued) {
-            prepareNextFrameQueued = true;
-            Platform.runLater(() -> {
-                prepareNextFrameQueued = false;
-
-                if (!pauseRequested) {
-                    prepareNextFrame();
-                }
-            });
+        if (decoderFinished && preparedFrames.isEmpty() && pendingAudio.isEmpty()) {
+            finishPlayback();
         }
     }
 
@@ -439,7 +502,10 @@ public class VideoPlayerModel {
 
         // Dump some logging to the console once per second so that real time performance can be monitored.
         if (intFrameRate > 0 && frame.frameNumber() % intFrameRate == 0) {
-            long remainingUs = (frame.targetTimeNs() - frame.preparedAtNs()) / 1_000L;
+            long relativeTimestampUs = Math.max(0, frame.mediaTimestampUs() - firstTimestampUs);
+            long dueTimeNs = playbackStartNs + relativeTimestampUs * 1_000L;
+            long remainingUs = (dueTimeNs - frame.preparedAtNs()) / 1_000L;
+
             if (remainingUs < 0) {
                 System.out.printf("Frame headroom is \u001B[31m%5dus\u001B[0m out of %dus spare.%n",
                         remainingUs,
@@ -455,45 +521,49 @@ public class VideoPlayerModel {
     }
 
     private void queueAudio(long timestampUs, Frame frame) {
-        if (!audioOutputEnabled || audioPlayer == null) {
-            return;
-        }
+        synchronized (audioLock) {
+            if (!audioOutputEnabled || audioPlayer == null) {
+                return;
+            }
 
-        byte[] samples = audioPlayer.copySamples(frame);
-        if (samples.length > 0) {
-            pendingAudio.add(new PendingAudio(timestampUs, samples));
+            byte[] samples = audioPlayer.copySamples(frame);
+            if (samples.length > 0) {
+                pendingAudio.add(new PendingAudio(timestampUs, samples));
+            }
         }
     }
 
     private void writeDueAudio(long now) {
-        // Handle some obvious early exits
-        if (!audioOutputEnabled || audioPlayer == null) {
-            pendingAudio.clear();
-            return;
-        }
-
-        if (pauseRequested || firstTimestampUs == NO_SEEK_REQUEST || playbackStartNs <= 0) {
-            return;
-        }
-
-        // Here is the real time dependent logic
-        long dueTimestampUs = firstTimestampUs + (now + AUDIO_LEAD_NS - playbackStartNs) / 1_000L;
-        while (!pendingAudio.isEmpty()) {
-            PendingAudio audio = pendingAudio.peek();
-            if (audio.timestampUs() > dueTimestampUs) {
+        synchronized (audioLock) {
+            // Handle some obvious early exits
+            if (!audioOutputEnabled || audioPlayer == null) {
+                pendingAudio.clear();
                 return;
             }
 
-            int written = audioPlayer.write(audio.samples(), audio.offset(), audio.remaining());
-            if (written <= 0) {
+            if (pauseRequested || firstTimestampUs == NO_SEEK_REQUEST || playbackStartNs <= 0) {
                 return;
             }
 
-            audio.advance(written);
-            if (!audio.finished()) {
-                return;
+            // Here is the real time dependent logic
+            long dueTimestampUs = firstTimestampUs + (now + AUDIO_LEAD_NS - playbackStartNs) / 1_000L;
+            while (!pendingAudio.isEmpty()) {
+                PendingAudio audio = pendingAudio.peek();
+                if (audio.timestampUs() > dueTimestampUs) {
+                    return;
+                }
+
+                int written = audioPlayer.write(audio.samples(), audio.offset(), audio.remaining());
+                if (written <= 0) {
+                    return;
+                }
+
+                audio.advance(written);
+                if (!audio.finished()) {
+                    return;
+                }
+                pendingAudio.remove();
             }
-            pendingAudio.remove();
         }
     }
 
@@ -521,8 +591,10 @@ public class VideoPlayerModel {
     private void closePlaybackResources() {
         playbackTimer.stop();
         playbackOpen = false;
+        stopDecoderWorker();
         preparedFrames.clear();
         pendingAudio.clear();
+        decoderFinished = false;
         firstTimestampUs = NO_SEEK_REQUEST;
         playbackStartNs = 0;
         pauseStartedNs = 0;
@@ -530,8 +602,10 @@ public class VideoPlayerModel {
         frameProcessorsInitialised = false;
 
         if (audioPlayer != null) {
-            audioPlayer.close();
-            audioPlayer = null;
+            synchronized (audioLock) {
+                audioPlayer.close();
+                audioPlayer = null;
+            }
         }
 
         if (grabber != null) {
@@ -606,8 +680,10 @@ public class VideoPlayerModel {
     }
 
     private void flushAudioOutput() {
-        if (audioPlayer != null) {
-            audioPlayer.flush();
+        synchronized (audioLock) {
+            if (audioPlayer != null) {
+                audioPlayer.flush();
+            }
         }
     }
 
