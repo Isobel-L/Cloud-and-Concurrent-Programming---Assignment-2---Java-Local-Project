@@ -41,3 +41,8 @@
 - Improved thread shutdown coordination and audio resource handling
 - Tested stopping, restarting, seeking and closing the player using a 30-second video
 - Confirmed playback remained responsive without noticeable freezing
+- Reviewed application startup, GUI controls and error-handling behaviour.
+- Stress-tested rapid seeking, pausing, restarting and playback completion.
+- Confirmed the application handles nonexistent video files with a clear error message.
+- Updated command-line help descriptions to match the assignment specification.
+- Ran all 18 existing automated tests successfully.
