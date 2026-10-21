@@ -40,6 +40,7 @@ import javafx.scene.image.Image;
  * </p>
  */
 public class VideoPlayerModel {
+
     private static final long NO_SEEK_REQUEST = -1; // Sentinel value used when no seek position is active.
     private static final long FIVE_SECONDS_US = 5_000_000L;
     private static final long AUDIO_LEAD_NS = 30_000_000L;
@@ -105,6 +106,7 @@ public class VideoPlayerModel {
             Consumer<String> statusChangedHandler,
             BiConsumer<Boolean, Boolean> playbackStateChangedHandler,
             Consumer<Boolean> audioOutputStateChangedHandler) {
+
         audioOutputEnabled = audioEnabled;
         this.videoSizeChangedHandler = videoSizeChangedHandler;
         this.frameReadyHandler = frameReadyHandler;
@@ -112,10 +114,12 @@ public class VideoPlayerModel {
         this.playbackStateChangedHandler = playbackStateChangedHandler;
         this.audioOutputStateChangedHandler = audioOutputStateChangedHandler;
         this.frameProcessors = new ArrayList<>();
+
         // Create one processor per option so duplicates are applied separately and in order.
         for (String option : frameEffectOptions) {
             frameProcessors.add(createFrameProcessor(option));
         }
+
 //        frameProcessors.add(new FrameBleeder());
 //        frameProcessors.add(new FrameScratcher());
 //        frameProcessors.add(new FrameDuster());
@@ -201,6 +205,7 @@ public class VideoPlayerModel {
             pendingAudio.clear();
             flushAudioOutput();
         }
+
         notifyAudioOutputStateChanged();
     }
 
@@ -229,6 +234,7 @@ public class VideoPlayerModel {
         long baseTimestampUs = relativeSeekBaseUs != NO_SEEK_REQUEST
                 ? relativeSeekBaseUs
                 : currentTimestampUs;
+
         seekTo(baseTimestampUs + offsetUs);
     }
 
@@ -299,6 +305,7 @@ public class VideoPlayerModel {
 
         audioAvailable = grabber.hasAudio();
         audioPlayer = new AudioPlayer();
+
         if (audioAvailable) {
             audioPlayer.open(grabber.getSampleRate(), grabber.getAudioChannels());
         }
@@ -373,8 +380,13 @@ public class VideoPlayerModel {
 
         worker.interrupt();
 
+        synchronized (preparedFrames) {
+            preparedFrames.notifyAll();
+        }
+
         if (worker != Thread.currentThread()) {
             boolean interrupted = false;
+
             while (worker.isAlive()) {
                 try {
                     worker.join();
@@ -382,6 +394,7 @@ public class VideoPlayerModel {
                     interrupted = true;
                 }
             }
+
             if (interrupted) {
                 Thread.currentThread().interrupt();
             }
@@ -396,6 +409,7 @@ public class VideoPlayerModel {
         }
 
         PreparedFrame frame = readNextVideoFrame();
+
         if (frame != null && playbackOpen) {
             preparedFrames.put(frame);
         }
@@ -404,12 +418,14 @@ public class VideoPlayerModel {
     private PreparedFrame readNextVideoFrame() throws Exception {
         while (playbackOpen && !Thread.currentThread().isInterrupted()) {
             Frame frame = grabFrame();
+
             if (frame == null) {
                 decoderFinished = true;
                 return null;
             }
 
             long timestampUs = grabber.getTimestamp();
+
             if (audioAvailable && frame.samples != null) {
                 queueAudio(timestampUs, frame);
             }
@@ -437,6 +453,7 @@ public class VideoPlayerModel {
             if (firstTimestampUs == NO_SEEK_REQUEST) {
                 firstTimestampUs = timestampUs;
                 playbackStartNs = System.nanoTime();
+
                 if (pauseRequested) {
                     pauseStartedNs = playbackStartNs;
                 }
@@ -479,6 +496,7 @@ public class VideoPlayerModel {
 
         // Task (2)
         PreparedFrame nextFrame = preparedFrames.peek();
+
         if (nextFrame != null && firstTimestampUs != NO_SEEK_REQUEST) {
             if (pauseRequested && pausedSeekPreviewPending) {
                 // Display the sought frame once without resuming playback.
@@ -507,6 +525,7 @@ public class VideoPlayerModel {
 
     private void displayPreparedFrame(long now) {
         PreparedFrame frame = preparedFrames.poll();
+
         if (frame == null) {
             return;
         }
@@ -545,6 +564,7 @@ public class VideoPlayerModel {
             }
 
             byte[] samples = audioPlayer.copySamples(frame);
+
             if (samples.length > 0) {
                 pendingAudio.add(new PendingAudio(timestampUs, samples));
             }
@@ -565,21 +585,26 @@ public class VideoPlayerModel {
 
             // Here is the real time dependent logic
             long dueTimestampUs = firstTimestampUs + (now + AUDIO_LEAD_NS - playbackStartNs) / 1_000L;
+
             while (!pendingAudio.isEmpty()) {
                 PendingAudio audio = pendingAudio.peek();
+
                 if (audio.timestampUs() > dueTimestampUs) {
                     return;
                 }
 
                 int written = audioPlayer.write(audio.samples(), audio.offset(), audio.remaining());
+
                 if (written <= 0) {
                     return;
                 }
 
                 audio.advance(written);
+
                 if (!audio.finished()) {
                     return;
                 }
+
                 pendingAudio.remove();
             }
         }
@@ -610,8 +635,13 @@ public class VideoPlayerModel {
         playbackTimer.stop();
         playbackOpen = false;
         stopDecoderWorker();
+
         preparedFrames.clear();
-        pendingAudio.clear();
+
+        synchronized (audioLock) {
+            pendingAudio.clear();
+        }
+
         decoderFinished = false;
         pausedSeekPreviewPending = false;
         firstTimestampUs = NO_SEEK_REQUEST;
@@ -622,8 +652,13 @@ public class VideoPlayerModel {
 
         if (audioPlayer != null) {
             synchronized (audioLock) {
-                audioPlayer.close();
-                audioPlayer = null;
+                try {
+                    audioPlayer.close();
+                } catch (Exception e) {
+                    // Continue releasing the remaining playback resources.
+                } finally {
+                    audioPlayer = null;
+                }
             }
         }
 
@@ -633,45 +668,56 @@ public class VideoPlayerModel {
             } catch (Exception e) {
                 // The resource is being closed; there is no useful recovery action.
             }
+
             try {
                 grabber.close();
             } catch (Exception e) {
                 // The resource is being closed; there is no useful recovery action.
             }
+
             grabber = null;
         }
 
         if (converter != null) {
-            converter.close();
-            converter = null;
+            try {
+                converter.close();
+            } finally {
+                converter = null;
+            }
         }
     }
 
     private String mediaName(File file) {
         String fileName = file.getName();
         int extensionStart = fileName.lastIndexOf('.');
+
         if (extensionStart <= 0) {
             return fileName;
         }
+
         return fileName.substring(0, extensionStart);
     }
 
     private long clampSeekTimestamp(long timestampUs) {
         long clampedTimestampUs = Math.max(0, timestampUs);
         long durationUs = videoDurationUs;
+
         if (durationUs != NO_SEEK_REQUEST) {
             clampedTimestampUs = Math.min(clampedTimestampUs, durationUs);
         }
+
         return clampedTimestampUs;
     }
 
     private long displayableSeekTimestamp(long logicalTimestampUs) {
         long durationUs = videoDurationUs;
+
         if (durationUs == NO_SEEK_REQUEST || logicalTimestampUs < durationUs) {
             return logicalTimestampUs;
         }
 
         int frameDurationUs = videoFrameDurationUs;
+
         if (frameDurationUs <= 0) {
             return Math.max(0, durationUs - 1);
         }
@@ -695,6 +741,7 @@ public class VideoPlayerModel {
         if (audioAvailable) {
             return grabber.grab();
         }
+
         return grabber.grabImage();
     }
 

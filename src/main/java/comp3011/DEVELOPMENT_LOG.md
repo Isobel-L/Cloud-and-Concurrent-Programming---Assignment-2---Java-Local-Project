@@ -37,3 +37,7 @@
 - Identified an issue where seeking while paused did not update the displayed frame
 - Updated playback logic to display the new frame without resuming playback
 - Verified that seeking while paused now works correctly
+- Reviewed background decoder shutdown and resource cleanup
+- Improved thread shutdown coordination and audio resource handling
+- Tested stopping, restarting, seeking and closing the player using a 30-second video
+- Confirmed playback remained responsive without noticeable freezing
