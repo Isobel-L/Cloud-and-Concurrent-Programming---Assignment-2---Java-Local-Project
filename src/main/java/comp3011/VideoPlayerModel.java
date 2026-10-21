@@ -81,6 +81,7 @@ public class VideoPlayerModel {
     private volatile boolean audioOutputEnabled;
     private boolean audioAvailable;
     private boolean frameProcessorsInitialised;
+    private boolean pausedSeekPreviewPending;
     private long currentTimestampUs;
     private long videoDurationUs = NO_SEEK_REQUEST;
     private int videoFrameDurationUs;
@@ -185,6 +186,7 @@ public class VideoPlayerModel {
             flushAudioOutput();
         } else {
             resumePlaybackClock(System.nanoTime());
+            pausedSeekPreviewPending = false;
             synchronized (preparedFrames) {
                 preparedFrames.notifyAll();
             }
@@ -310,6 +312,7 @@ public class VideoPlayerModel {
         pendingAudio.clear();
         preparedFrames.clear();
         decoderFinished = false;
+        pausedSeekPreviewPending = pauseRequested;
         currentTimestampUs = logicalTimestampUs;
         relativeSeekBaseUs = logicalTimestampUs;
         firstTimestampUs = NO_SEEK_REQUEST;
@@ -476,13 +479,19 @@ public class VideoPlayerModel {
 
         // Task (2)
         PreparedFrame nextFrame = preparedFrames.peek();
-        if (!pauseRequested && nextFrame != null && firstTimestampUs != NO_SEEK_REQUEST) {
-            long relativeTimestampUs = Math.max(0, nextFrame.mediaTimestampUs() - firstTimestampUs);
-            long dueTimeNs = playbackStartNs + relativeTimestampUs * 1_000L;
-
-            if (dueTimeNs <= now) {
-                // We have a prepared frame ready to go and it is due (or just past due!) so get it up on screen ASAP!
+        if (nextFrame != null && firstTimestampUs != NO_SEEK_REQUEST) {
+            if (pauseRequested && pausedSeekPreviewPending) {
+                // Display the sought frame once without resuming playback.
+                pausedSeekPreviewPending = false;
                 displayPreparedFrame(now);
+            } else if (!pauseRequested) {
+                long relativeTimestampUs = Math.max(0, nextFrame.mediaTimestampUs() - firstTimestampUs);
+                long dueTimeNs = playbackStartNs + relativeTimestampUs * 1_000L;
+
+                if (dueTimeNs <= now) {
+                    // We have a prepared frame ready to go and it is due (or just past due!) so get it up on screen ASAP!
+                    displayPreparedFrame(now);
+                }
             }
         }
 
@@ -491,7 +500,7 @@ public class VideoPlayerModel {
         // to replace this whole block with simple linear control flow logic
         // such as: if (!pauseRequested && preparedFrame == null) prepareNextFrame();
         // to compare.
-        if (decoderFinished && preparedFrames.isEmpty() && pendingAudio.isEmpty()) {
+        if (!pauseRequested && decoderFinished && preparedFrames.isEmpty() && pendingAudio.isEmpty()) {
             finishPlayback();
         }
     }
@@ -604,6 +613,7 @@ public class VideoPlayerModel {
         preparedFrames.clear();
         pendingAudio.clear();
         decoderFinished = false;
+        pausedSeekPreviewPending = false;
         firstTimestampUs = NO_SEEK_REQUEST;
         playbackStartNs = 0;
         pauseStartedNs = 0;

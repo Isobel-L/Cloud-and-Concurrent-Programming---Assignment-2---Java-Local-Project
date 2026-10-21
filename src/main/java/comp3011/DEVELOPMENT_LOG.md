@@ -31,3 +31,9 @@
 - Prevented buffered frames from advancing during paused playback
 - Tested playback, pausing, resuming and replaying with multiple effects
 - Confirmed all 18 JUnit tests passed and the application ran successfully
+
+## 21 October 2026
+- Tested pause, resume and seeking with the background decoder
+- Identified an issue where seeking while paused did not update the displayed frame
+- Updated playback logic to display the new frame without resuming playback
+- Verified that seeking while paused now works correctly
