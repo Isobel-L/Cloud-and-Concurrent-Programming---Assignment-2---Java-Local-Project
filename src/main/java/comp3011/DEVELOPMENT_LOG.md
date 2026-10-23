@@ -46,3 +46,9 @@
 - Confirmed the application handles nonexistent video files with a clear error message.
 - Updated command-line help descriptions to match the assignment specification.
 - Ran all 18 existing automated tests successfully.
+
+## 23 October 2026 
+- Added eight producer-consumer concurrency tests covering bounded queue capacity, FIFO ordering, thread interruption and concurrent load.
+- Added five tests targeting the video model's frame buffer and decoder shutdown behaviour.
+- Verified that the decoder worker can be interrupted and joined safely in controlled tests.
+- Confirmed all 31 automated tests pass with no failures or errors.
