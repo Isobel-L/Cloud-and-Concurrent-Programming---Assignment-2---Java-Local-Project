@@ -53,8 +53,8 @@ public class VideoPlayerModel {
     private static final int FRAME_BUFFER_CAPACITY = 3;
 
     // Performance experiment: more processing workers and queued frames.
-    private static final int PROCESSING_BUFFER_CAPACITY = 8;
-    private static final int PROCESSING_WORKERS = 4;
+    private static final int PROCESSING_BUFFER_CAPACITY = 12;
+    private static final int PROCESSING_WORKERS = 6;
 
     private final List<FrameProcessor> frameProcessors;
 
