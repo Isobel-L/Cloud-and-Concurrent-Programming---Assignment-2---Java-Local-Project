@@ -76,7 +76,6 @@ public class VideoPlayerModel {
     private AudioPlayer audioPlayer; // This is ours. It has some real time buffering smarts.
     private final ArrayBlockingQueue<PreparedFrame> preparedFrames =
             new ArrayBlockingQueue<>(FRAME_BUFFER_CAPACITY); // Ours, but is just an Image with some meta-data added.
-    private boolean prepareNextFrameQueued; // True only when the event loop needs to call our prepareNextFrame method.
     private volatile boolean playbackOpen; // True when playback is happening.
     private volatile boolean pauseRequested;
     private volatile boolean audioOutputEnabled;
@@ -480,12 +479,11 @@ public class VideoPlayerModel {
         return null;
     }
 
-    // This is called on a heart beat by the GUI thread. We want to be co-operative here by (a) not blocking, and (b)
-    // getting our required work out of the way quickly so that we can return control flow to the JavaFX event loop for
-    // handling user interaction with the GUI and rendering. We have three jobs: (1) keep audio flowing if sound is on,
-    // (2) display a frame if it is due and (3) prepare the next frame if we're in the window after the previous frame
-    // has gone to the display. We don't buffer frames here, just handling them one at a time. Not a great architecture,
-    // living on the edge a bit, but can't do much better on a single thread.
+// Called regularly on the JavaFX application thread.
+// Keeps audio flowing and displays prepared frames when they are due.
+// Video decoding and frame processing happen on a background thread,
+// which places completed frames into a bounded thread-safe queue.
+// This keeps the JavaFX thread free to handle playback controls and GUI updates.
     private void pumpPlayback(long now) {
         if (!playbackOpen) {
             return;
@@ -513,11 +511,7 @@ public class VideoPlayerModel {
             }
         }
 
-        // Task (3). We'll try and be nice to the GUI event loop here by queueing the prepareNextFrame call rather than
-        // hogging the thread and doing it here, hence the tricky callback and use of prepareNextFrameQueued. Feel free
-        // to replace this whole block with simple linear control flow logic
-        // such as: if (!pauseRequested && preparedFrame == null) prepareNextFrame();
-        // to compare.
+        // Finish playback once decoding is complete and no buffered frames or audio remain.
         if (!pauseRequested && decoderFinished && preparedFrames.isEmpty() && pendingAudio.isEmpty()) {
             finishPlayback();
         }
