@@ -51,10 +51,13 @@ public class VideoPlayerModel {
     private static final long AUDIO_LEAD_NS = 30_000_000L;
 
     private static final int FRAME_BUFFER_CAPACITY = 3;
-    private static final int PROCESSING_BUFFER_CAPACITY = 4;
-    private static final int PROCESSING_WORKERS = 2;
+
+    // Performance experiment: more processing workers and queued frames.
+    private static final int PROCESSING_BUFFER_CAPACITY = 8;
+    private static final int PROCESSING_WORKERS = 4;
 
     private final List<FrameProcessor> frameProcessors;
+
     private final Queue<PendingAudio> pendingAudio =
             new ConcurrentLinkedQueue<>();
 
@@ -66,14 +69,8 @@ public class VideoPlayerModel {
     private final BiConsumer<Boolean, Boolean> playbackStateChangedHandler;
     private final Consumer<Boolean> audioOutputStateChangedHandler;
 
-    // This is the critical wiring that allows the framework (JavaFX) to call
-    // into our model logic every time it goes around its event loop. Every GUI
-    // system has an event loop so that button clicks, key presses and window
-    // resizes can be responded to. Most offer ways of running additional logic
-    // in either idle time (when there are no pending UI events to process) or
-    // on a regular heart beat, such as with this JavaFX AnimationTimer. Here
-    // we just create a little anonymous local subclass and override the handle
-    // method to call the method we want run every heart beat.
+    // JavaFX calls this timer on its application thread.
+    // Playback coordination must not block GUI responsiveness.
     private final AnimationTimer playbackTimer = new AnimationTimer() {
         @Override
         public void handle(long now) {
@@ -84,18 +81,20 @@ public class VideoPlayerModel {
     private File videoFile;
     private FFmpegFrameGrabber grabber;
 
-    // Each processing worker owns its converter;
-    // JavaFXFrameConverter is not shared between threads.
+    // Each processing thread owns its own converter.
     private final ThreadLocal<JavaFXFrameConverter> workerConverters =
             ThreadLocal.withInitial(JavaFXFrameConverter::new);
 
     private AudioPlayer audioPlayer;
 
+    // Futures are queued in decoding order so processed frames
+    // can be displayed in their original sequence.
     private final ArrayBlockingQueue<Future<PreparedFrame>> processingFrames =
             new ArrayBlockingQueue<>(PROCESSING_BUFFER_CAPACITY);
 
     private ExecutorService processingPool;
 
+    // Completed frames ready to be displayed by JavaFX.
     private final ArrayBlockingQueue<PreparedFrame> preparedFrames =
             new ArrayBlockingQueue<>(FRAME_BUFFER_CAPACITY);
 
@@ -133,6 +132,7 @@ public class VideoPlayerModel {
             Consumer<Boolean> audioOutputStateChangedHandler) {
 
         audioOutputEnabled = audioEnabled;
+
         this.videoSizeChangedHandler = videoSizeChangedHandler;
         this.frameReadyHandler = frameReadyHandler;
         this.statusChangedHandler = statusChangedHandler;
@@ -141,8 +141,8 @@ public class VideoPlayerModel {
 
         this.frameProcessors = new ArrayList<>();
 
-        // Create one processor per option so duplicates are applied
-        // separately and in order.
+        // Create one processor per option so repeated effects
+        // remain separate and all effects are applied in order.
         for (String option : frameEffectOptions) {
             frameProcessors.add(createFrameProcessor(option));
         }
@@ -159,8 +159,8 @@ public class VideoPlayerModel {
         // frameProcessors.add(new FrameNumberer());
     }
 
-    // Maps the command-line identifiers to their corresponding processors.
-    // Add new processor types here when extending the supported options.
+    // Maps command-line identifiers to frame processors.
+    // Add new processor types here when extending supported options.
     private FrameProcessor createFrameProcessor(String option) {
         return switch (option) {
             case "-n" -> new FrameNumberer();
@@ -174,6 +174,7 @@ public class VideoPlayerModel {
             case "-m" -> new FrameMottler();
             case "-b" -> new FrameBleeder();
             case "-p" -> new FramePepperer();
+
             default -> throw new IllegalArgumentException(
                     "Unknown frame processor option: " + option);
         };
@@ -183,6 +184,7 @@ public class VideoPlayerModel {
         videoFile = file;
         videoDurationUs = NO_SEEK_REQUEST;
         videoFrameDurationUs = 0;
+
         startPlayback(0, false, NO_SEEK_REQUEST);
     }
 
@@ -190,6 +192,7 @@ public class VideoPlayerModel {
         if (videoFile == null) {
             return;
         }
+
         seekTo(0);
     }
 
@@ -209,6 +212,7 @@ public class VideoPlayerModel {
                         false,
                         currentTimestampUs);
             }
+
             return;
         }
 
@@ -218,6 +222,7 @@ public class VideoPlayerModel {
         if (pauseRequested) {
             pauseStartedNs = System.nanoTime();
             flushAudioOutput();
+
         } else {
             resumePlaybackClock(System.nanoTime());
             pausedSeekPreviewPending = false;
@@ -246,8 +251,10 @@ public class VideoPlayerModel {
 
     public void stopPlayback() {
         closePlaybackResources();
+
         currentTimestampUs = 0;
         pauseRequested = false;
+
         notifyStatusChanged("Stopped");
         notifyFrameReady(null);
         notifyPlaybackStateChanged();
@@ -278,14 +285,18 @@ public class VideoPlayerModel {
                     grabTimestampUs,
                     pauseRequested,
                     logicalTimestampUs);
+
             return;
         }
 
         try {
             stopDecoderWorker();
+
             grabber.setTimestamp(grabTimestampUs);
+
             resetPlaybackClock(logicalTimestampUs);
             flushAudioOutput();
+
             startDecoderWorker();
             notifyPlaybackStateChanged();
 
@@ -316,6 +327,7 @@ public class VideoPlayerModel {
             resetPlaybackClock(currentTimestampUs);
 
             playbackOpen = true;
+
             playbackTimer.start();
             startDecoderWorker();
 
@@ -330,8 +342,10 @@ public class VideoPlayerModel {
             throws Exception {
 
         grabber = new FFmpegFrameGrabber(videoFile);
+
         grabber.setImageMode(FrameGrabber.ImageMode.COLOR);
         grabber.setSampleMode(FrameGrabber.SampleMode.SHORT);
+
         grabber.start();
 
         notifyVideoSizeChanged(
@@ -354,6 +368,7 @@ public class VideoPlayerModel {
                 : NO_SEEK_REQUEST;
 
         audioAvailable = grabber.hasAudio();
+
         audioPlayer = new AudioPlayer();
 
         if (audioAvailable) {
@@ -377,8 +392,10 @@ public class VideoPlayerModel {
 
         currentTimestampUs = logicalTimestampUs;
         relativeSeekBaseUs = logicalTimestampUs;
+
         firstTimestampUs = NO_SEEK_REQUEST;
         logicalPlaybackBaseUs = logicalTimestampUs;
+
         playbackStartNs = 0;
         pauseStartedNs = pauseRequested ? System.nanoTime() : 0;
     }
@@ -392,8 +409,7 @@ public class VideoPlayerModel {
     }
 
     // Frame numbering is inexpensive and deterministic.
-    // Bypassing the pool avoids costly per-frame copies and worker scheduling
-    // during playback with no effects or only frame numbering.
+    // Avoid processing-pool overhead when no heavier effects are selected.
     private boolean usesDirectFramePipeline() {
         return frameProcessors.stream().allMatch(
                 processor -> processor instanceof FrameNumberer);
@@ -402,7 +418,8 @@ public class VideoPlayerModel {
     private void startDecoderWorker() {
         decoderFinished = false;
 
-        // Avoid starting a processing pool when no heavy effects are selected.
+        // Only start processing workers when heavier effects are required.
+        // Four workers are used for this performance experiment.
         if (!usesDirectFramePipeline()) {
             processingPool = Executors.newFixedThreadPool(
                     PROCESSING_WORKERS,
@@ -412,6 +429,7 @@ public class VideoPlayerModel {
                                 "frame-processor");
 
                         thread.setDaemon(true);
+
                         return thread;
                     });
         }
@@ -430,13 +448,17 @@ public class VideoPlayerModel {
         try {
             while (playbackOpen && !currentWorker.isInterrupted()) {
 
-                if ((usesDirectFramePipeline()
-                        ? preparedFrames.remainingCapacity() == 0
-                        : processingFrames.remainingCapacity() == 0)
-                        || (pauseRequested
-                        && (!processingFrames.isEmpty()
-                        || !preparedFrames.isEmpty()))) {
+                boolean directPipeline = usesDirectFramePipeline();
 
+                boolean bufferFull = directPipeline
+                        ? preparedFrames.remainingCapacity() == 0
+                        : processingFrames.remainingCapacity() == 0;
+
+                boolean pausedWithBufferedFrames = pauseRequested
+                        && (!processingFrames.isEmpty()
+                        || !preparedFrames.isEmpty());
+
+                if (bufferFull || pausedWithBufferedFrames) {
                     synchronized (preparedFrames) {
                         preparedFrames.wait(25);
                     }
@@ -444,7 +466,7 @@ public class VideoPlayerModel {
                     continue;
                 }
 
-                if (usesDirectFramePipeline()) {
+                if (directPipeline) {
                     prepareUnprocessedFrame();
                 } else {
                     prepareNextFrame();
@@ -483,6 +505,7 @@ public class VideoPlayerModel {
                 while (worker.isAlive()) {
                     try {
                         worker.join();
+
                     } catch (InterruptedException e) {
                         interrupted = true;
                     }
@@ -496,7 +519,7 @@ public class VideoPlayerModel {
             decoderWorker = null;
         }
 
-        // Cancel outstanding work before releasing decoding resources.
+        // Cancel queued processing tasks before releasing resources.
         for (Future<PreparedFrame> future : processingFrames) {
             future.cancel(true);
         }
@@ -518,6 +541,7 @@ public class VideoPlayerModel {
                             TimeUnit.MILLISECONDS)) {
                         break;
                     }
+
                 } catch (InterruptedException e) {
                     interrupted = true;
                 }
@@ -529,8 +553,9 @@ public class VideoPlayerModel {
         }
     }
 
-    // Playback with no effects or only frame numbering uses a direct
-    // decoder-to-display pipeline, avoiding extra copies and futures.
+    // Lightweight playback path:
+    // decoding, optional numbering and image conversion occur directly
+    // on the decoder thread without cloning or submitting worker tasks.
     private void prepareUnprocessedFrame() throws Exception {
         if (!playbackOpen
                 || preparedFrames.remainingCapacity() == 0) {
@@ -615,6 +640,8 @@ public class VideoPlayerModel {
         }
     }
 
+    // Heavy-effects path:
+    // decode one frame, then submit its independent copy for processing.
     private void prepareNextFrame() throws Exception {
         if (!playbackOpen
                 || processingFrames.remainingCapacity() == 0) {
@@ -627,8 +654,8 @@ public class VideoPlayerModel {
             return;
         }
 
-        // The bounded queue provides backpressure.
-        // Futures are stored in decoding order.
+        // Futures are inserted in decoding order.
+        // Queue capacity limits outstanding work.
         Future<PreparedFrame> future = processingPool.submit(
                 () -> processDecodedFrame(decoded));
 
@@ -694,7 +721,8 @@ public class VideoPlayerModel {
             long targetTimeNs =
                     playbackStartNs + relativeTimestampUs * 1_000L;
 
-            // Clone before JavaCV reuses the decoder's frame buffer.
+            // FFmpeg may reuse its decoding buffer.
+            // Cloning protects the worker's frame from the next decode.
             return new DecodedFrame(
                     frame.clone(),
                     frameNumber,
@@ -728,8 +756,8 @@ public class VideoPlayerModel {
                 System.nanoTime());
     }
 
-    // Move completed frames into the display queue in decoding order,
-    // not in the order in which worker threads finish.
+    // Move completed frames to the display queue in decoding order,
+    // regardless of which worker finishes first.
     private void collectProcessedFrames() {
         while (preparedFrames.remainingCapacity() > 0) {
 
@@ -755,6 +783,7 @@ public class VideoPlayerModel {
                         cause instanceof Exception
                                 ? (Exception) cause
                                 : new Exception(cause));
+
                 return;
 
             } catch (java.util.concurrent.CancellationException e) {
@@ -767,23 +796,20 @@ public class VideoPlayerModel {
         }
     }
 
-    // Called regularly on the JavaFX application thread.
-    // Keeps audio flowing and displays prepared frames when due.
-    // Decoding happens on a background thread. For heavier effects,
-    // processing occurs in a worker pool and the frames are reordered
-    // before display.
+    // Called on the JavaFX application thread.
+    // Keeps audio flowing and displays prepared frames when they are due.
     private void pumpPlayback(long now) {
         if (!playbackOpen) {
             return;
         }
 
-        // Task (1): Schedule audio.
+        // Task (1): Audio scheduling.
         writeDueAudio(now);
 
-        // Collect any completed processed frames.
+        // Collect completed frames from the processing pool.
         collectProcessedFrames();
 
-        // Task (2): Display frames on time.
+        // Task (2): Video display.
         PreparedFrame nextFrame = preparedFrames.peek();
 
         if (nextFrame != null
@@ -791,7 +817,7 @@ public class VideoPlayerModel {
 
             if (pauseRequested && pausedSeekPreviewPending) {
 
-                // Display the sought frame once without resuming playback.
+                // Display the sought frame without resuming playback.
                 pausedSeekPreviewPending = false;
                 displayPreparedFrame(now);
 
@@ -805,14 +831,12 @@ public class VideoPlayerModel {
                         playbackStartNs + relativeTimestampUs * 1_000L;
 
                 if (dueTimeNs <= now) {
-
-                    // Display the next frame when its time arrives.
                     displayPreparedFrame(now);
                 }
             }
         }
 
-        // Finish once decoding, processing, display and audio are complete.
+        // Finish after decoding, processing, display and audio complete.
         if (!pauseRequested
                 && decoderFinished
                 && processingFrames.isEmpty()
@@ -837,7 +861,7 @@ public class VideoPlayerModel {
         currentTimestampUs = frame.logicalTimestampUs();
         relativeSeekBaseUs = NO_SEEK_REQUEST;
 
-        // Print frame headroom approximately once per second.
+        // Log processing headroom approximately once per second.
         if (intFrameRate > 0
                 && frame.frameNumber() % intFrameRate == 0) {
 
@@ -856,6 +880,7 @@ public class VideoPlayerModel {
                         "Frame headroom is \u001B[31m%5dus\u001B[0m out of %dus spare.%n",
                         remainingUs,
                         videoFrameDurationUs);
+
             } else {
                 System.out.printf(
                         "Frame headroom is \u001B[32m%5dus\u001B[0m out of %dus spare.%n",
@@ -885,7 +910,6 @@ public class VideoPlayerModel {
     private void writeDueAudio(long now) {
         synchronized (audioLock) {
 
-            // Handle early exits.
             if (!audioOutputEnabled || audioPlayer == null) {
                 pendingAudio.clear();
                 return;
@@ -968,9 +992,11 @@ public class VideoPlayerModel {
 
         decoderFinished = false;
         pausedSeekPreviewPending = false;
+
         firstTimestampUs = NO_SEEK_REQUEST;
         playbackStartNs = 0;
         pauseStartedNs = 0;
+
         audioAvailable = false;
         frameProcessorsInitialised = false;
 
@@ -978,8 +1004,10 @@ public class VideoPlayerModel {
             synchronized (audioLock) {
                 try {
                     audioPlayer.close();
+
                 } catch (Exception e) {
                     // Continue releasing remaining playback resources.
+
                 } finally {
                     audioPlayer = null;
                 }
@@ -989,12 +1017,14 @@ public class VideoPlayerModel {
         if (grabber != null) {
             try {
                 grabber.stop();
+
             } catch (Exception e) {
                 // Continue releasing remaining playback resources.
             }
 
             try {
                 grabber.close();
+
             } catch (Exception e) {
                 // Continue releasing remaining playback resources.
             }
@@ -1049,7 +1079,8 @@ public class VideoPlayerModel {
 
         for (FrameProcessor processor : frameProcessors) {
 
-            // These effects reuse mutable per-instance buffers or caches.
+            // These effects maintain mutable per-instance buffers or caches.
+            // Synchronisation prevents simultaneous access to the same object.
             if (processor instanceof FrameMottler
                     || processor instanceof FrameBleeder) {
 
@@ -1128,6 +1159,7 @@ public class VideoPlayerModel {
     }
 
     private static class PendingAudio {
+
         private final long timestampUs;
         private final byte[] samples;
         private int offset;
