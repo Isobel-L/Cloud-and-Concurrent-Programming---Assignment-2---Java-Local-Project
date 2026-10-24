@@ -27,3 +27,21 @@ In the original version, these tasks were carried out on the JavaFX application 
 ## Conclusion
 Overall, the initial results suggest that the concurrent implementation is better at preparing frames ahead of their display deadlines.
 The original single-threaded player was generally able to keep up with playback, but the concurrent version had noticeably more frame headroom throughout the recorded test. I think the biggest improvement from this approach is that the application no longer relies on the JavaFX thread to handle video decoding and processing. Separating these responsibilities should make the application more responsive, particularly when more demanding frame effects are applied. Although further testing would help confirm the overall performance improvement, the results so far support the decision to use a background decoder thread and a bounded frame buffer.
+
+## Additional Performance Testing — 24 October 2026
+After implementing the background decoder, I improved performance further by introducing parallel frame processing. The updated implementation uses a dedicated decoder thread, multiple processing workers and bounded queues to process frames concurrently while preserving their display order.
+
+### TITAN Performance Results
+I tested several configurations using TITAN Part 2:
+
+- **2 workers:** 164.94% performance, using 3.78 of 8 CPU cores.
+- **4 workers:** 267.05% performance, using 5.33 of 8 CPU cores.
+- **4 workers with thread-local effects:** 270.20% performance, using 5.36 of 8 CPU cores.
+- **6 workers:** Approximately 373% performance, using 6.75 of 8 CPU cores.
+
+### Debugging and Optimisation
+I investigated whether synchronisation in `FrameMottler` and `FrameBleeder` was limiting performance. I experimented with thread-local working buffers to allow these effects to run concurrently without locks. Although this slightly improved performance, it reduced startup speed and resulted in more missed frames during testing. I reverted these changes and retained the original synchronisation.
+Increasing the processing worker count from two to six produced the most significant improvement. The final implementation uses six processing workers, a processing queue capacity of twelve frames and a prepared-frame buffer capacity of three frames.
+
+### Conclusion
+The results demonstrate that parallel frame processing significantly improves performance compared with the reference implementation. My final version achieved approximately **373% performance** on TITAN Part 2. This testing also highlighted the importance of balancing processing speed with thread safety, frame accuracy and playback responsiveness. The final submission still requires verification of frame correctness across the tested workloads.

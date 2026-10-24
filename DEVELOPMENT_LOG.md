@@ -52,3 +52,20 @@
 - Added five tests targeting the video model's frame buffer and decoder shutdown behaviour.
 - Verified that the decoder worker can be interrupted and joined safely in controlled tests.
 - Confirmed all 31 automated tests pass with no failures or errors.
+
+## 24 October 2026
+- Ran TITAN Part 1 and Part 2 tests to evaluate the concurrent video player against the supplied reference implementation.
+- Investigated a failed parallel-processing submission in which some frames were not displayed, and revised the frame-processing pipeline to improve reliability.
+- Introduced a direct processing path for lightweight workloads, avoiding unnecessary worker scheduling and frame cloning when only frame numbering was enabled.
+- Updated the concurrent pipeline to use a dedicated decoder thread, a bounded queue of processing tasks and a fixed thread pool, while preserving frame display order.
+- Tested an initial two-worker configuration, achieving 164.94% performance on TITAN with no reported missed frames.
+- Increased the worker count from two to four and expanded the processing buffer, improving TITAN performance to 267.05%.
+- Investigated processor-level synchronisation in `FrameMottler` and `FrameBleeder` as a potential bottleneck.
+- Experimented with thread-local working buffers and removal of processor locks. This achieved 270.20% performance but reduced startup performance and resulted in more missed frames during testing.
+- Reverted the experimental thread-local changes and retained the more reliable synchronised implementation.
+- Increased the processing worker count from four to six and the processing buffer capacity from eight to twelve.
+- Achieved approximately 373% performance on TITAN Part 2, with CPU utilisation equivalent to approximately 6.75 of the eight available cores.
+- Used Maven tests and local JavaFX playback tests to check compilation, concurrency behaviour and playback under multiple frame effects.
+- Repeatedly verified that all 31 automated tests passed with no failures or errors.
+- Used Git branches, commits and stashing to preserve successful implementations while experimenting with alternative concurrency designs.
+- Selected the six-worker implementation for final verification and submission, subject to the final frame-correctness and assessment checks.
